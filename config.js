@@ -1,6 +1,6 @@
 export default {
   "botName": "Nexus",
-  "prefix": ".",
+  "prefix": "/",
   "nickname": "Nexus bot",
   "adminIds": [
     "100062160914296",
