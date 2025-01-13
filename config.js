@@ -8,7 +8,7 @@ export default {
     "100075528791428"
   ],
    "logging": {
-    "messageObjects": true // set false is you don't want too much logs in console especially if you're using render 
+    "messageObjects": false // set false is you don't want too much logs in console especially if you're using render 
   },
   "facebookAccount": {
     "email": "",//your email here,buh not available yet
