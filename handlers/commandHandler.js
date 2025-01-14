@@ -2,6 +2,8 @@ import chalk from 'chalk';
 import config from '../config.js';
 import { commands, generateRandomDelay } from '../index.js';
 import db from '../db.js';
+import { pathToFileURL } from 'url';
+import path from 'path';
 
 class ReplyManager {
     constructor() {
@@ -10,17 +12,9 @@ class ReplyManager {
 
     registerReplyListener(messageId, callback, options = {}) {
         const { timeout = 5 * 60 * 1000, oneTime = true, filter = () => true } = options;
-        const listener = {
-            callback,
-            createdAt: Date.now(),
-            timeout,
-            oneTime,
-            filter,
-        };
+        const listener = { callback, createdAt: Date.now(), timeout, oneTime, filter };
         this.replyListeners.set(messageId, listener);
-        setTimeout(() => {
-            this.removeReplyListener(messageId);
-        }, timeout);
+        setTimeout(() => { this.removeReplyListener(messageId); }, timeout);
     }
 
     async handleReply(api, message) {
@@ -55,18 +49,14 @@ class ReplyManager {
 }
 
 const replyManager = new ReplyManager();
-const commandCache = new Map();
-
-const formatTechMessage = (text) => {
-    return `[𝗔𝗙 𝗡𝗘𝗫𝗨𝗦 v2.0 ]━━━━━━━\n${text}\n━━━━━━━━[ ⚡ END ]━━━`;
-};
 
 async function loadCommand(commandName) {
     try {
-        const commandPath = `../commands/${commandName}.js`;
-        const module = await import(commandPath + '?t=' + Date.now());
-        commandCache.set(commandName, module.default);
-        return module.default;
+        const commandPath = path.join(process.cwd(), 'commands', `${commandName}.js`);
+        const fileUrl = pathToFileURL(commandPath).href;
+        delete require.cache[require.resolve(commandPath)];
+        const command = (await import(`${fileUrl}?update=${Date.now()}`)).default;
+        return command;
     } catch (error) {
         console.error(chalk.red(`Failed to load command ${commandName}:`, error));
         return null;
@@ -76,10 +66,10 @@ async function loadCommand(commandName) {
 export default async function commandHandler(api, message) {
     const nexusMessage = {
         reply: async (response) => {
-            api.sendMessage(formatTechMessage(response), message.threadID, message.messageID);
+            api.sendMessage(response, message.threadID, message.messageID);
         },
         replyWithCallback: async (response, callback) => {
-            const sentMessage = await api.sendMessage(formatTechMessage(response), message.threadID, message.messageID);
+            const sentMessage = await api.sendMessage(response, message.threadID, message.messageID);
             replyManager.registerReplyListener(sentMessage.messageID, callback);
         },
     };
@@ -91,12 +81,7 @@ export default async function commandHandler(api, message) {
         }
         const user = userInfo[message.senderID];
         const existingUser = db.getUser(message.senderID) || {};
-        db.setUser(message.senderID, {
-            ...existingUser,
-            name: user.name,
-            coins: existingUser.coins || 0,
-            lastActive: Date.now()
-        });
+        db.setUser(message.senderID, { ...existingUser, name: user.name, coins: existingUser.coins || 0, lastActive: Date.now() });
     });
 
     api.getThreadInfo(message.threadID, async (err, threadInfo) => {
@@ -106,12 +91,7 @@ export default async function commandHandler(api, message) {
         }
         const existingGroup = db.getGroup(message.threadID) || {};
         const groupPrefix = db.getGroupPrefix(message.threadID) || config.prefix;
-        db.setGroup(message.threadID, {
-            ...existingGroup,
-            name: threadInfo.name,
-            prefix: groupPrefix,
-            lastActive: Date.now()
-        });
+        db.setGroup(message.threadID, { ...existingGroup, name: threadInfo.name, prefix: groupPrefix, lastActive: Date.now() });
     });
 
     const groupPrefix = db.getGroupPrefix(message.threadID) || config.prefix;
@@ -138,7 +118,7 @@ export default async function commandHandler(api, message) {
     const handleBannedUser = () => {
         if (db.isBannedUser(message.senderID)) {
             const reason = db.readDB().bannedUsers[message.senderID];
-            api.sendMessage(formatTechMessage(`⛔ ACCESS DENIED\n\n👤 User Status: Banned\n📝 Reason: ${reason}`), message.threadID, message.messageID);
+            api.sendMessage(`─━━═════⊰⊱ ⬛ ⊰⊱═════━━─\nYou have been banned from using this bot. Reason: ${reason}\n─━━═════⊰⊱ ⬛ ⊰⊱═════━━─`, message.threadID, message.messageID);
             return true;
         }
         return false;
@@ -147,7 +127,7 @@ export default async function commandHandler(api, message) {
     const handleBannedThread = () => {
         if (db.isBannedThread(message.threadID)) {
             const reason = db.readDB().bannedThreads[message.threadID];
-            api.sendMessage(formatTechMessage(`⛔ GROUP ACCESS DENIED\n\n👥 Group Status: Banned\n📝 Reason: ${reason}`), message.threadID, message.messageID);
+            api.sendMessage(`─━━═════⊰⊱ ⬛ ⊰⊱═════━━─\nYour group have been banned from using this bot. Reason: ${reason}\n─━━═════⊰⊱ ⬛ ⊰⊱═════━━─`, message.threadID, message.messageID);
             return true;
         }
         return false;
@@ -155,86 +135,88 @@ export default async function commandHandler(api, message) {
 
     const handleAdminOnly = () => {
         if (global.adminOnlyMode && !global.adminBot.includes(message.senderID)) {
-            nexusMessage.reply("🔒 ADMIN MODE ACTIVE\n\n⚠️ Only system administrators can access commands at this time.");
+            nexusMessage.reply("sorry bruh Only admins can use the bot.");
             return true;
         }
         return false;
     };
 
-    if (!messageBody.startsWith(groupPrefix)) {
-        for (const [cmdName, command] of commands.entries()) {
-            if (command.onChat && typeof command.onChat === 'function') {
-                if (messageBody.toLowerCase().startsWith(command.config.name.toLowerCase() + ' ') || 
-                    messageBody.toLowerCase() === command.config.name.toLowerCase()) {
-                    if (handleBannedUser() || handleBannedThread() || handleAdminOnly()) return;
-                    
-                    const freshCommand = await loadCommand(cmdName);
-                    if (freshCommand) {
-                        const args = messageBody.toLowerCase() === command.config.name.toLowerCase() ? 
-                            [] : messageBody.trim().split(' ').slice(1);
-                        
-                        freshCommand.onChat({
-                            api,
-                            message,
-                            args,
-                            config,
-                            nexusMessage,
-                            db,
-                            onReply: async (reply) => {
-                                await freshCommand.onReply?.({
-                                    api,
-                                    message,
-                                    reply,
-                                    config,
-                                    nexusMessage,
-                                    db
-                                });
-                            },
-                            sendMessage: async (text) => {
-                                const sentMessage = await api.sendMessage(formatTechMessage(text), message.threadID);
-                                return sentMessage;
-                            },
-                        });
-                    }
-                }
+    for (const command of commands.values()) {
+        if (command.onChat && typeof command.onChat === 'function') {
+            if (messageBody.toLowerCase().startsWith(command.config.name.toLowerCase() + ' ') || messageBody.toLowerCase() === command.config.name.toLowerCase()) {
+                if (handleBannedUser() || handleBannedThread() || handleAdminOnly()) return;
+                const args = messageBody.toLowerCase() === command.config.name.toLowerCase() ? [] : messageBody.trim().split(' ').slice(1);
+                command.onChat({ api, message, args, config, nexusMessage, db,
+                    onReply: async (reply) => {
+                        await command.onReply?.({ api, message, reply, config, nexusMessage, db });
+                    },
+                    sendMessage: async (text) => {
+                        const sentMessage = await api.sendMessage(text, message.threadID);
+                        return sentMessage;
+                    },
+                });
             }
         }
+    }
+
+    if (messageBody === groupPrefix) {
+        if (handleBannedUser() || handleBannedThread() || handleAdminOnly()) return;
+        nexusMessage.reply(`✨That is the bot prefix. Type !help to see all commands.`);
+        return;
+    }
+
+    if (!messageBody.startsWith(groupPrefix)) {
         return;
     }
 
     const args = messageBody.slice(groupPrefix.length).trim().split(/ +/);
     const commandName = args.shift().toLowerCase();
-    
-    let command = commands.get(commandName);
-    if (!command) {
-        command = Array.from(commands.values()).find((cmd) => 
-            cmd.config.aliases && cmd.config.aliases.includes(commandName)
-        );
-    }
+    let command = Array.from(commands.values()).find((command) => {
+        return command.config.name.toLowerCase() === commandName || (command.config.aliases && command.config.aliases.includes(commandName));
+    });
 
     if (handleBannedUser() || handleBannedThread() || handleAdminOnly()) return;
 
+    if (command && command.onLoad) {
+        await command.onLoad({ api, message, db });
+    }
+
     if (!command) {
-        nexusMessage.reply(`❌ COMMAND NOT FOUND\n\n📋 Command: "${commandName}"\n💡 Type !help to view available commands`);
+        nexusMessage.reply(`🚫Command "${commandName}" not found. Type !help to see all commands.`);
         return;
     }
 
-    const freshCommand = await loadCommand(command.config.name);
-    if (!freshCommand) {
-        nexusMessage.reply(`⚠️ COMMAND LOAD ERROR\n\n📋 Command: "${commandName}"\n🔄 Please try again`);
+    const commandWithOnChat = Array.from(commands.values()).find((cmd) => cmd.config.name.toLowerCase() === commandName && cmd.onChat);
+    if (commandWithOnChat && !command.run && !command.onStart && !command.Nexus) {
+        nexusMessage.reply(`🚫The command "${commandName}" works without a prefix. You can use it by typing "${commandName}" followed by your query without prefix.`);
         return;
+    }
+
+    if (command.config && command.config.permission === 1 && !config.adminIds.includes(message.senderID)) {
+        nexusMessage.reply(`╭───────────────✎\n│❌You do not have permission to │use this command.\n╰───────────────`);
+        return;
+    }
+
+    if (command.config && command.config.permission === 2) {
+        const isAdmin = await api.getThreadInfo(message.threadID);
+        const isAdminVar = isAdmin.participantIDs.includes(message.senderID) && isAdmin.adminIDs.some(admin => admin.id === message.senderID);
+        if (!isAdminVar) {
+            nexusMessage.reply(`╭───────────────✎\n│You need to be a group admin to\n│use this command.\n╰───────────────`);
+            return;
+        }
     }
 
     try {
+        const freshCommand = await loadCommand(commandName) || command;
+
         if (freshCommand.config && freshCommand.config.cooldown) {
             const cooldownTime = freshCommand.config.cooldown * 1000;
             const cooldownKey = `cooldown_${freshCommand.config.name}_${message.senderID}`;
             const lastUsedTimestamp = await db.get(cooldownKey);
-            
             if (lastUsedTimestamp) {
                 const timeRemaining = cooldownTime - (Date.now() - lastUsedTimestamp);
                 if (timeRemaining > 0) {
-                    nexusMessage.reply(`⏳ COOLDOWN ACTIVE\n\n⌛ Time remaining: ${Math.ceil(timeRemaining / 1000)}s\n📋 Command: ${commandName}`);
+                    nexusMessage.reply(`You need to wait ${Math.ceil(timeRemaining / 1000)} seconds before using this command again.`);
                     return;
                 }
             }
@@ -244,32 +226,20 @@ export default async function commandHandler(api, message) {
         setTimeout(async () => {
             try {
                 const enhancedSendMessage = async (text, options = {}) => {
-                    const sentMessage = await api.sendMessage(formatTechMessage(text), message.threadID);
+                    const sentMessage = await api.sendMessage(text, message.threadID);
                     if (options.onReply) {
-                        replyManager.registerReplyListener(
-                            sentMessage.messageID,
-                            async (reply) => {
-                                if (freshCommand.onReply) {
-                                    await freshCommand.onReply({
-                                        api,
-                                        message,
-                                        reply,
-                                        config,
-                                        nexusMessage,
-                                        db,
-                                        sendMessage: enhancedSendMessage
-                                    });
-                                }
-                                if (options.onReply) {
-                                    await options.onReply(reply);
-                                }
-                            },
-                            {
-                                timeout: options.replyTimeout || 5 * 60 * 1000,
-                                oneTime: options.oneTimeReply ?? true,
-                                filter: (message) => message.body !== ''
+                        replyManager.registerReplyListener(sentMessage.messageID, async (reply) => {
+                            if (freshCommand.onReply) {
+                                await freshCommand.onReply({ api, message, reply, config, nexusMessage, db, sendMessage: enhancedSendMessage });
                             }
-                        );
+                            if (options.onReply) {
+                                await options.onReply(reply);
+                            }
+                        }, {
+                            timeout: options.replyTimeout || 5 * 60 * 1000,
+                            oneTime: options.oneTimeReply ?? true,
+                            filter: (message) => message.body !== ''
+                        });
                     }
                     return { ...sentMessage, replyMessageID: sentMessage.messageID };
                 };
@@ -283,14 +253,7 @@ export default async function commandHandler(api, message) {
                     replyManager,
                     db,
                     onReply: async (reply) => {
-                        await freshCommand.onReply?.({
-                            api,
-                            message,
-                            reply,
-                            config,
-                            nexusMessage,
-                            db
-                        });
+                        await freshCommand.onReply?.({ api, message, reply, config, nexusMessage, db });
                     },
                     sendMessage: enhancedSendMessage
                 };
@@ -304,11 +267,11 @@ export default async function commandHandler(api, message) {
                 }
             } catch (error) {
                 console.error(chalk.red(`Error in command "${commandName}":`), error);
-                nexusMessage.reply(`🔥 SYSTEM ERROR\n\n📋 Command: "${commandName}"\n⚠️ Error: ${error.message}\n\n📞 Please report this to the system administrator`);
+                nexusMessage.reply(`❌Error in command "${commandName}": ${error.message}\nPlease report this error to the bot developer.`);
             }
         }, generateRandomDelay(1000, 3000));
     } catch (error) {
-        nexusMessage.reply(`🔥 SYSTEM ERROR\n\n📋 Command: "${commandName}"\n⚠️ Error: ${error.message}\n\n📞 Please report this to the system administrator`);
+        nexusMessage.reply(`❌Error in command "${commandName}": ${error.message}\nPlease report this error to the bot developer.`);
     }
 }
 
